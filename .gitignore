@@ -1,0 +1,8 @@
+# файлы не относящиеся к проекту
+test_data/
+uploads/
+archive.zip
+hello
+sentiment_results_rubert.csv
+rubert_sentiment_analysis.png
+__pycache__
