@@ -1,6 +1,14 @@
 # файлы не относящиеся к проекту
+.venv/
+__pycache__/
 test_data/
 uploads/
+reviews/
+movies/
+movies.csv
+movies.zip
+movies2.csv
+movies3.csv
 archive.zip
 hello
 sentiment_results_rubert.csv

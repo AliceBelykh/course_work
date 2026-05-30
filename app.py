@@ -10,6 +10,7 @@ import os
 import uuid
 from datetime import datetime
 import shutil
+import glob
 import re
 from collections import Counter
 
@@ -27,6 +28,12 @@ except ImportError:
     print("⚠️ NLTK не установлен. Установите: pip install nltk")
 
 from sentiment_analyzer import SentimentAnalyzer, AVAILABLE_MODELS
+
+
+# Глобальные переменные для кэширования
+movies_db = {}       # { "название": id, "id": название }
+movies_info = {}     # { id: {"title": "", "year": "", "rating": ""} }
+reviews_index = {}  # { movie_id: [список путей] }
 
 # Создаём директории
 os.makedirs("uploads", exist_ok=True)
@@ -76,6 +83,140 @@ class BatchAnalysisRequest(BaseModel):
 class SingleWordCloudRequest(BaseModel):
     text: str
     sentiment: str = 'neutral'
+
+# ============================================
+# ЗАГРУЗКА ДАННЫХ
+# ============================================
+
+def load_movies_database(csv_path="movies.csv"):
+    """Загружает фильмы из вашего CSV (без изменений структуры)"""
+    global movies_db, movies_info
+    
+    try:
+        df = pd.read_csv(csv_path, encoding='utf-8')
+        
+        for _, row in df.iterrows():
+            movie_id = str(row['kinopoiskId']).strip()
+            title = str(row['Title']).strip().lower()
+            year = str(row.get('Year', '')) if pd.notna(row.get('Year', '')) else ''
+            rating = str(row.get('Rating Kinopoisk', '')) if pd.notna(row.get('Rating Kinopoisk', '')) else ''
+            
+            # Для поиска по названию
+            movies_db[title] = movie_id
+            # Для обратного поиска по ID
+            movies_db[movie_id] = title
+            # Дополнительная информация
+            movies_info[movie_id] = {
+                'title': row['Title'],
+                'year': year,
+                'rating': rating
+            }
+        
+        print(f"✅ Загружено {len(df)} фильмов")
+        return True
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки movies.csv: {e}")
+        return False
+
+def get_review_files_list(folder_path="reviews"):
+    """
+    Возвращает словарь { movie_id: [список путей к файлам рецензий] }
+    БЕЗ чтения содержимого файлов
+    """
+    reviews_index = {}
+    
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path, exist_ok=True)
+        return reviews_index
+    
+    files = glob.glob(f"{folder_path}/*.txt")
+    print(f"📄 Найдено {len(files)} файлов с рецензиями (индексация без чтения)")
+    
+    for filepath in files:
+        filename = os.path.basename(filepath)
+        match = re.match(r'^(\d+)-', filename)
+        if match:
+            movie_id = match.group(1)
+            if movie_id not in reviews_index:
+                reviews_index[movie_id] = []
+            reviews_index[movie_id].append(filepath)  # ← сохраняем ТОЛЬКО путь
+    
+    print(f"✅ Проиндексировано {len(reviews_index)} фильмов")
+    return reviews_index
+
+def load_review_text(filepath):
+    """
+    Загружает текст одного отзыва по пути
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception as e:
+        print(f"⚠️ Ошибка чтения {filepath}: {e}")
+        return ""
+
+def get_reviews_by_movie(movie_id, limit=None):
+    """
+    Получает отзывы для фильма (с постраничной загрузкой)
+    limit - максимум отзывов (для тестирования, можно убрать)
+    """
+    filepaths = reviews_index.get(movie_id, [])
+    
+    if limit:
+        filepaths = filepaths[:limit]
+    
+    reviews = []
+    for filepath in filepaths:
+        text = load_review_text(filepath)
+        if text:
+            reviews.append(text)
+    
+    return reviews
+
+def get_reviews_count(movie_id):
+    """Возвращает количество доступных отзывов для фильма"""
+    return len(reviews_index.get(movie_id, []))
+
+# Глобальная переменная теперь хранит ТОЛЬКО пути
+reviews_index = {}  # { movie_id: [filepath1, filepath2, ...] }
+
+# Загрузка индекса при старте
+def init_reviews_index(folder_path="reviews"):
+    global reviews_index
+    reviews_index = get_review_files_list(folder_path)
+    return reviews_index
+
+
+# Загружаем данные при старте
+print("\n📂 Загрузка данных...")
+load_movies_database("movies_extended.csv")
+init_reviews_index("reviews")
+print("")
+
+# ============================================
+# ПОИСК ФИЛЬМОВ
+# ============================================
+
+def search_movie_by_title(query):
+    """Ищет фильм по названию в вашей базе"""
+    query_lower = query.lower().strip()
+    results = []
+    
+    for title, movie_id in movies_db.items():
+        if title.isdigit():
+            continue
+        if query_lower in title:
+            info = movies_info.get(movie_id, {})
+            results.append({
+                'id': movie_id,
+                'name': info.get('title', title.title()),
+                'year': info.get('year', ''),
+                'rating': info.get('rating', ''),
+                'reviews_count': get_reviews_count(movie_id)  # ← быстрая операция
+            })
+    
+    results.sort(key=lambda x: (x['name'].lower() != query_lower, x['name']))
+    return results[:15]
 
 # ============================================
 # ВЕБ-ИНТЕРФЕЙС
@@ -481,6 +622,113 @@ async def health_check():
         "model_loaded": analyzer.model_name,
         "timestamp": datetime.now().isoformat()
     }
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+
+# ============================================
+# API ДЛЯ РАБОТЫ С КИНОПОИСКОМ (ЛОКАЛЬНЫЙ ДАТАСЕТ)
+# ============================================
+
+class SearchMovieRequest(BaseModel):
+    query: str
+
+@app.post("/api/movies/search")
+async def search_movie(request: SearchMovieRequest):
+    """Поиск фильма по названию"""
+    results = search_movie_by_title(request.query)
+    if results:
+        return {"success": True, "data": results}
+    return {"success": False, "error": f"Фильм '{request.query}' не найден"}
+
+@app.post("/api/movies/analyze")
+async def analyze_movie(request: SearchMovieRequest):
+    """Анализ всех рецензий фильма"""
+    # Находим ID фильма
+    query_lower = request.query.lower().strip()
+    movie_id = None
+    movie_title = None
+    
+    for title, mid in movies_db.items():
+        if title.isdigit():
+            continue
+        if query_lower in title:
+            movie_id = mid
+            movie_title = movies_info.get(movie_id, {}).get('title', title.title())
+            break
+    
+    if not movie_id:
+        return {"success": False, "error": f"Фильм '{request.query}' не найден"}
+    
+    # Получаем рецензии
+    # Получаем отзывы (только когда нужно)
+    reviews = get_reviews_by_movie(movie_id)  # ← загружаем ТОЛЬКО для выбранного фильма
+    
+    if not reviews:
+        return {"success": False, "error": f"Для фильма '{movie_title}' нет рецензий"}
+    
+    # Анализируем
+    results = []
+    sentiment_counts = {'positive': 0, 'negative': 0, 'neutral': 0}
+    
+    for review in reviews:
+        analysis = analyzer.analyze_single(review, clean=True, clean_level='standard')
+        results.append({
+            'text': review[:200] + "..." if len(review) > 200 else review,
+            'sentiment': analysis['sentiment'],
+            'sentiment_label': analyzer.get_sentiment_label(analysis['sentiment']),
+            'confidence': analysis['confidence']
+        })
+        sentiment_counts[analysis['sentiment']] += 1
+    
+    # Сохраняем CSV
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"reviews_{movie_id}_{timestamp}.csv"
+    csv_path = os.path.join("uploads", csv_filename)
+    
+    df = pd.DataFrame(results)
+    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+    uploaded_files[csv_filename] = csv_path
+    
+    total = len(results)
+    stats = {
+        'total': total,
+        'positive': sentiment_counts['positive'],
+        'negative': sentiment_counts['negative'],
+        'neutral': sentiment_counts['neutral'],
+        'positive_percent': round(sentiment_counts['positive'] / total * 100, 1) if total else 0,
+        'negative_percent': round(sentiment_counts['negative'] / total * 100, 1) if total else 0,
+        'neutral_percent': round(sentiment_counts['neutral'] / total * 100, 1) if total else 0,
+        'avg_confidence': round(sum(r['confidence'] for r in results) / total, 3) if total else 0
+    }
+    
+    return {
+        "success": True,
+        "data": {
+            "movie_name": movie_title,
+            "movie_id": movie_id,
+            "stats": stats,
+            "reviews_preview": results[:20],
+            "csv_filename": csv_filename
+        }
+    }
+
+@app.get("/api/movies/list")
+async def get_movies_list():
+    """Список всех фильмов, у которых есть рецензии"""
+    movies_list = []
+    for movie_id, filepaths in reviews_index.items():  # ← работаем с индексам
+        info = movies_info.get(movie_id, {})
+        movies_list.append({
+            'id': movie_id,
+            'name': info.get('title', movie_id),
+            'year': info.get('year', ''),
+            'rating': info.get('rating', ''),
+            'reviews_count': len(filepaths)  # ← просто длина списка, без чтения файлов
+        })
+    movies_list.sort(key=lambda x: x['name'])
+    return {"success": True, "data": movies_list}
 
 if __name__ == "__main__":
     import uvicorn
