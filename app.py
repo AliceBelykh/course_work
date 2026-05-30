@@ -14,6 +14,19 @@ import glob
 import re
 from collections import Counter
 
+# NLTK для стоп-слов (опционально, но рекомендуется)
+try:
+    import nltk
+    from nltk.corpus import stopwords
+    NLTK_AVAILABLE = True
+    try:
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        nltk.download('stopwords', quiet=True)
+except ImportError:
+    NLTK_AVAILABLE = False
+    print("⚠️ NLTK не установлен. Установите: pip install nltk")
+
 from sentiment_analyzer import SentimentAnalyzer, AVAILABLE_MODELS
 
 
@@ -33,14 +46,28 @@ app = FastAPI(title="Sentiment Analysis API", description="API для анали
 # Монтируем статические файлы
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Шаблоны
-templates = Jinja2Templates(directory="templates")
-
 # Глобальный экземпляр анализатора (по умолчанию легкая модель)
 analyzer = SentimentAnalyzer(model_id='tiny')
 
 # Хранилище результатов загрузок
 uploaded_files = {}
+
+# Русские стоп-слова для частотного анализа
+RUSSIAN_STOPWORDS = {
+    'и', 'в', 'во', 'не', 'что', 'на', 'я', 'с', 'со', 'как', 'а', 'но', 'он', 'она', 'оно',
+    'они', 'его', 'её', 'их', 'у', 'к', 'по', 'от', 'до', 'из', 'за', 'о', 'об', 'при', 'через',
+    'бы', 'да', 'нет', 'так', 'вот', 'же', 'ли', 'ну', 'это', 'быть', 'весь', 'все', 'всё',
+    'вся', 'всех', 'всем', 'всеми', 'этот', 'эта', 'эти', 'этих', 'этим', 'этими', 'тот', 'та',
+    'те', 'тех', 'тем', 'теми', 'свой', 'своя', 'свое', 'свои', 'своего', 'своей', 'своих',
+    'своим', 'своими', 'который', 'которая', 'которое', 'которые', 'которого', 'которой',
+    'которых', 'которым', 'которыми', 'такой', 'такая', 'такое', 'такие', 'такого', 'такой',
+    'таких', 'таким', 'такими', 'очень', 'весьма', 'более', 'менее', 'также', 'где', 'когда',
+    'тогда', 'поэтому', 'потому', 'почему', 'зачем', 'откуда', 'куда', 'туда', 'сюда', 'тут',
+    'там', 'здесь', 'теперь', 'уже', 'ещё', 'еще', 'даже', 'будто', 'словно', 'точно', 'прямо',
+    'едва', 'лишь', 'только', 'чуть', 'вдруг', 'сразу', 'опять', 'снова', 'вновь', 'потом',
+    'затем', 'сперва', 'сначала', 'наконец', 'действительно', 'неужели', 'разве', 'как-то',
+    'где-то', 'кто-то', 'что-то', 'кое-как', 'кое-где', 'кое-кто', 'кое-что'
+}
 
 # Модели для API
 class TextAnalysisRequest(BaseModel):
@@ -52,6 +79,10 @@ class BatchAnalysisRequest(BaseModel):
     texts: List[str]
     model_id: str = 'tiny'
     clean_level: str = 'standard'
+
+class SingleWordCloudRequest(BaseModel):
+    text: str
+    sentiment: str = 'neutral'
 
 # ============================================
 # ЗАГРУЗКА ДАННЫХ
@@ -191,20 +222,22 @@ def search_movie_by_title(query):
 # ВЕБ-ИНТЕРФЕЙС
 # ============================================
 
-# @app.get("/", response_class=HTMLResponse)
-# async def index(request: Request):
-#     """Главная страница с интерфейсом"""
-#     from sentiment_analyzer import AVAILABLE_MODELS
-#     return templates.TemplateResponse("index.html", {
-#         "request": request,
-#         "models": AVAILABLE_MODELS
-#     })
-
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    with open("templates/index.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
+    """Главная страница"""
+    try:
+        with open("templates/index.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return HTMLResponse(content="""
+        <html>
+            <body>
+                <h1>Ошибка: файл templates/index.html не найден</h1>
+                <p>Убедитесь, что файл index.html находится в папке templates</p>
+            </body>
+        </html>
+        """, status_code=404)
 
 # ============================================
 # API ДЛЯ РАБОТЫ С ТЕКСТОМ
@@ -214,31 +247,13 @@ async def index(request: Request):
 async def analyze_text(request: TextAnalysisRequest):
     """
     Анализ одного текста
-    
-    Пример запроса:
-    {
-        "text": "Отличный фильм, очень понравился!",
-        "model_id": "tiny",
-        "clean_level": "standard"
-    }
     """
     try:
-        # Если модель отличается от текущей - загружаем
-        global analyzer
-        if analyzer.model_name != request.model_id and request.model_id != 'tiny':
-            # Динамическая загрузка другой модели
-            temp_analyzer = SentimentAnalyzer(model_id=request.model_id)
-            result = temp_analyzer.analyze_single(
-                request.text, 
-                clean=True, 
-                clean_level=request.clean_level
-            )
-        else:
-            result = analyzer.analyze_single(
-                request.text, 
-                clean=True, 
-                clean_level=request.clean_level
-            )
+        result = analyzer.analyze_single(
+            request.text, 
+            clean=True, 
+            clean_level=request.clean_level
+        )
         
         return {
             "success": True,
@@ -247,7 +262,7 @@ async def analyze_text(request: TextAnalysisRequest):
                 "sentiment": result['sentiment'],
                 "sentiment_label": analyzer.get_sentiment_label(result['sentiment']),
                 "confidence": result['confidence'],
-                "model_used": result.get('model_used', analyzer.model_name),
+                "model_used": result.get('model_used', 'tiny'),
                 "text_length": result['text_length_cleaned'],
                 "chunks_analyzed": result.get('chunks_analyzed', 1)
             }
@@ -259,20 +274,13 @@ async def analyze_text(request: TextAnalysisRequest):
 async def analyze_batch(request: BatchAnalysisRequest):
     """
     Анализ нескольких текстов
-    
-    Пример запроса:
-    {
-        "texts": ["Отличный фильм!", "Скучно..."],
-        "model_id": "tiny",
-        "clean_level": "standard"
-    }
     """
     try:
-        temp_analyzer = SentimentAnalyzer(model_id=request.model_id)
-        results = temp_analyzer.analyze_batch(
+        results = analyzer.analyze_batch(
             request.texts, 
             clean=True, 
-            clean_level=request.clean_level
+            clean_level=request.clean_level,
+            show_progress=False
         )
         
         return {
@@ -281,7 +289,7 @@ async def analyze_batch(request: BatchAnalysisRequest):
                 {
                     "text": text[:100] + "..." if len(text) > 100 else text,
                     "sentiment": res['sentiment'],
-                    "sentiment_label": temp_analyzer.get_sentiment_label(res['sentiment']),
+                    "sentiment_label": analyzer.get_sentiment_label(res['sentiment']),
                     "confidence": res['confidence']
                 }
                 for text, res in zip(request.texts, results)
@@ -303,11 +311,6 @@ async def upload_csv(
 ):
     """
     Загрузка и анализ CSV файла
-    
-    Ожидаемый формат CSV:
-    - Должен содержать колонку с текстами (по умолчанию 'text')
-    - Другие колонки игнорируются
-    - Кодировка: UTF-8
     """
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="Файл должен быть в формате CSV")
@@ -327,7 +330,6 @@ async def upload_csv(
         try:
             df = pd.read_csv(filepath, encoding='utf-8')
         except:
-            # Пробуем другие кодировки
             try:
                 df = pd.read_csv(filepath, encoding='cp1251')
             except:
@@ -343,16 +345,23 @@ async def upload_csv(
                 }
             )
         
-        # Анализируем тексты
+        # Создаем анализатор с выбранной моделью
         temp_analyzer = SentimentAnalyzer(model_id=model_id)
         
         # Удаляем пустые строки
         df_clean = df[df[text_column].notna()].copy()
+        # Удаляем пустые строки
+        df_clean = df[df[text_column].notna()].copy()
+
+        # ДОБАВЬТЕ ЭТУ СТРОКУ - удаляем пустые строки и строки с nan
+        df_clean = df_clean[df_clean[text_column].astype(str).str.strip() != '']
+        df_clean = df_clean[df_clean[text_column].astype(str) != 'nan']
         
+        # Анализируем тексты
         results = []
         for idx, row in df_clean.iterrows():
             result = temp_analyzer.analyze_single(
-                row[text_column],
+                str(row[text_column]),
                 clean=True,
                 clean_level=clean_level
             )
@@ -382,6 +391,19 @@ async def upload_csv(
         # Сохраняем информацию для скачивания
         uploaded_files[result_filename] = result_path
         
+        # Создаем превью
+        preview = []
+        for _, row in df_clean.head(10).iterrows():
+            preview.append({
+                text_column: str(row[text_column])[:100],
+                'sentiment_label': row['sentiment_label'],
+                'confidence': row['confidence']
+            })
+                    # Рассчитываем среднюю уверенность по классам
+        positive_conf = df_clean[df_clean['sentiment'] == 'positive']['confidence'].mean() if stats['positive'] > 0 else 0
+        negative_conf = df_clean[df_clean['sentiment'] == 'negative']['confidence'].mean() if stats['negative'] > 0 else 0
+        neutral_conf = df_clean[df_clean['sentiment'] == 'neutral']['confidence'].mean() if stats['neutral'] > 0 else 0
+        
         return {
             "success": True,
             "data": {
@@ -389,7 +411,21 @@ async def upload_csv(
                 "original_filename": file.filename,
                 "result_filename": result_filename,
                 "stats": stats,
-                "preview": df_clean[[text_column, 'sentiment_label', 'confidence']].head(10).to_dict('records')
+                "preview": preview,
+                "positive_confidence": float(positive_conf),
+                "negative_confidence": float(negative_conf),
+                "neutral_confidence": float(neutral_conf)
+            }
+        }
+        
+        return {
+            "success": True,
+            "data": {
+                "file_id": file_id,
+                "original_filename": file.filename,
+                "result_filename": result_filename,
+                "stats": stats,
+                "preview": preview
             }
         }
         
@@ -413,13 +449,169 @@ async def download_result(filename: str):
     raise HTTPException(status_code=404, detail="Файл не найден")
 
 # ============================================
+# API ДЛЯ ОБЛАКА СЛОВ (НОВЫЕ ЭНДПОИНТЫ)
+# ============================================
+
+@app.post("/api/wordcloud/frequencies")
+async def get_word_frequencies(
+    file: UploadFile = File(...),
+    text_column: str = Form('text'),
+    clean_level: str = Form('standard')
+):
+    """
+    Анализ частотности слов для построения облака слов
+    Возвращает отдельно для всех, положительных, отрицательных и нейтральных отзывов
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Файл должен быть в формате CSV")
+    
+    try:
+        # Сохраняем временный файл
+        temp_path = os.path.join("uploads", f"temp_{uuid.uuid4()}_{file.filename}")
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Загружаем CSV
+        try:
+            df = pd.read_csv(temp_path, encoding='utf-8')
+        except:
+            try:
+                df = pd.read_csv(temp_path, encoding='cp1251')
+            except:
+                df = pd.read_csv(temp_path, encoding='latin1')
+        
+        # Удаляем временный файл
+        os.remove(temp_path)
+        
+        # Проверяем наличие колонки с текстом
+        if text_column not in df.columns:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": f"Колонка '{text_column}' не найдена. Доступны: {df.columns.tolist()}"}
+            )
+        
+        # Проверяем наличие колонки с тональностью
+        has_sentiment = 'sentiment' in df.columns
+        
+        # Русские стоп-слова
+        stopwords = {
+            'и', 'в', 'во', 'не', 'что', 'на', 'я', 'с', 'со', 'как', 'а', 'но', 'он', 'она', 'оно',
+            'они', 'его', 'её', 'их', 'у', 'к', 'по', 'от', 'до', 'из', 'за', 'о', 'об', 'при', 'через',
+            'бы', 'да', 'нет', 'так', 'вот', 'же', 'ли', 'ну', 'это', 'быть', 'весь', 'все', 'всё',
+            'очень', 'также', 'где', 'когда', 'тогда', 'уже', 'ещё', 'даже', 'фильм', 'кино', 'потом',
+            'потому', 'поэтому', 'зачем', 'почему', 'тут', 'там', 'здесь', 'теперь', 'еще'
+        }
+        
+        # Функция очистки текста
+        def clean_for_frequencies(text: str):
+            if not isinstance(text, str):
+                return []
+            
+            text = text.lower()
+            text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+            text = re.sub(r'[^\w\sа-яё]', '', text)
+            text = re.sub(r'\d+', '', text)
+            text = re.sub(r'\s+', ' ', text)
+            
+            words = text.split()
+            filtered_words = [w for w in words if len(w) >= 3 and w not in stopwords]
+            return filtered_words
+        
+        # Собираем частоты для каждой тональности
+        all_words = []
+        positive_words = []
+        negative_words = []
+        neutral_words = []
+        
+        for idx, row in df.iterrows():
+            # Пропускаем пустые строки
+            cell_value = row[text_column]
+            if pd.isna(cell_value):
+                continue
+            if str(cell_value).strip() == '':
+                continue
+            
+            text = str(cell_value)
+            words = clean_for_frequencies(text)
+            
+            # Добавляем в общий счётчик
+            all_words.extend(words)
+            
+            # Добавляем в счётчик по тональности (если есть колонка sentiment)
+            if has_sentiment:
+                sentiment = str(row.get('sentiment', 'neutral')).lower()
+                if sentiment == 'positive':
+                    positive_words.extend(words)
+                elif sentiment == 'negative':
+                    negative_words.extend(words)
+                else:
+                    neutral_words.extend(words)
+            else:
+                # Если нет колонки sentiment, добавляем все слова в neutral
+                neutral_words.extend(words)
+        
+        # Считаем частоты
+        from collections import Counter
+        all_counter = Counter(all_words)
+        positive_counter = Counter(positive_words)
+        negative_counter = Counter(negative_words)
+        neutral_counter = Counter(neutral_words)
+        
+        # Формируем результат
+        result = {
+            'all': [{'word': w, 'count': c} for w, c in all_counter.most_common(100) if w and w != 'nan'],
+            'positive': [{'word': w, 'count': c} for w, c in positive_counter.most_common(100) if w and w != 'nan'],
+            'negative': [{'word': w, 'count': c} for w, c in negative_counter.most_common(100) if w and w != 'nan'],
+            'neutral': [{'word': w, 'count': c} for w, c in neutral_counter.most_common(100) if w and w != 'nan']
+        }
+        
+        return {"success": True, "data": result}
+        
+    except Exception as e:
+        print(f"Ошибка в wordcloud/frequencies: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/wordcloud/single")
+async def get_word_frequencies_single(request: SingleWordCloudRequest):
+    """
+    Анализ частотности слов для одного текста
+    """
+    text = request.text
+    sentiment = request.sentiment
+    
+    if not text or len(text) < 50:
+        return {"success": True, "data": {"words": []}}
+    
+    # Очищаем текст
+    text = text.lower()
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+    text = re.sub(r'[^\w\sа-яё]', '', text)
+    text = re.sub(r'\d+', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Токенизация
+    words = text.split()
+    
+    # Удаляем стоп-слова и короткие слова
+    filtered_words = [w for w in words if w not in RUSSIAN_STOPWORDS and len(w) > 2]
+    
+    # Считаем частоты
+    word_counts = Counter(filtered_words)
+    
+    # Берем топ-30 слов
+    top_words = [{"word": word, "count": count, "sentiment": sentiment} 
+                 for word, count in word_counts.most_common(30)]
+    
+    return {"success": True, "data": {"words": top_words}}
+
+# ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ENDPOINTS
 # ============================================
 
 @app.get("/api/models")
 async def get_models():
     """Получить список доступных моделей"""
-    from sentiment_analyzer import AVAILABLE_MODELS
     return AVAILABLE_MODELS
 
 @app.get("/api/health")
@@ -541,3 +733,4 @@ async def get_movies_list():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    
