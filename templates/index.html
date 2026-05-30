@@ -251,6 +251,7 @@
         <div class="tabs">
             <button class="tab active" onclick="switchTab('text')">📝 Анализ текста</button>
             <button class="tab" onclick="switchTab('csv')">📁 Анализ CSV файла</button>
+            <button class="tab" onclick="switchTab('kinopoisk')">🎬 Кинопоиск</button>
         </div>
         
         <!-- Вкладка с текстом -->
@@ -312,6 +313,28 @@
             </div>
             
             <div id="csvResult"></div>
+        </div>
+        <!-- Вкладка с Кинопоиском -->
+        <div id="kinopoiskTab" class="card" style="display: none;">
+            <h2>🎬 Анализ отзывов из Кинопоиска</h2>
+            
+            <div style="margin-bottom: 15px;">
+                <label>Название фильма:</label>
+                <input type="text" id="movieSearchInput" placeholder="Например: Матрица, Брат, Интерстеллар..." 
+                    style="width: 60%; margin-left: 10px;">
+                <button onclick="searchMovie()" id="searchBtn">🔍 Найти фильм</button>
+                <button onclick="showAllMovies()" style="background: #666; margin-left: 10px;">📋 Все фильмы</button>
+            </div>
+            
+            <div id="searchResults" style="margin-top: 15px; display: none;">
+                <h3>Результаты поиска:</h3>
+                <div id="moviesList" style="max-height: 250px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px;"></div>
+                <div style="margin-top: 15px;">
+                    <button onclick="analyzeSelectedMovie()" id="analyzeBtn" disabled>📊 Анализировать отзывы</button>
+                </div>
+            </div>
+            
+            <div id="kinopoiskResult"></div>
         </div>
     </div>
     
@@ -469,6 +492,163 @@
         
         async function downloadFile(filename) {
             window.location.href = `/api/download/${filename}`;
+        }
+
+        // ============================================
+        // ФУНКЦИИ ДЛЯ РАБОТЫ С КИНОПОИСКОМ (ЛОКАЛЬНЫЙ ДАТАСЕТ)
+        // ============================================
+
+        let selectedMovie = null;
+
+        async function searchMovie() {
+            const query = document.getElementById('movieSearchInput').value;
+            if (!query.trim()) {
+                alert('Введите название фильма');
+                return;
+            }
+            
+            const searchBtn = document.getElementById('searchBtn');
+            const resultsDiv = document.getElementById('searchResults');
+            const moviesListDiv = document.getElementById('moviesList');
+            
+            searchBtn.disabled = true;
+            searchBtn.textContent = '⏳ Поиск...';
+            resultsDiv.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/movies/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query })
+                });
+                const data = await response.json();
+                
+                if (data.success && data.data.length > 0) {
+                    moviesListDiv.innerHTML = data.data.map(movie => `
+                        <div style="padding: 10px; border-bottom: 1px solid #e0e0e0; cursor: pointer;" 
+                            onclick="selectMovie('${movie.id}', '${movie.name.replace(/'/g, "\\'")}')">
+                            <strong>${movie.name}</strong>
+                            <span style="color: #666; margin-left: 10px;">${movie.year || '—'}</span>
+                            <span style="color: #ff9800; margin-left: 10px;">⭐ ${movie.rating || '—'}</span>
+                            <span style="color: #4caf50; margin-left: 10px;">📝 ${movie.reviews_count} отзывов</span>
+                        </div>
+                    `).join('');
+                    resultsDiv.style.display = 'block';
+                } else {
+                    moviesListDiv.innerHTML = `<p style="color: #f44336;">❌ Фильм "${query}" не найден</p>`;
+                    resultsDiv.style.display = 'block';
+                }
+            } catch (error) {
+                moviesListDiv.innerHTML = `<p style="color: #f44336;">❌ Ошибка: ${error.message}</p>`;
+                resultsDiv.style.display = 'block';
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.textContent = '🔍 Найти фильм';
+            }
+        }
+
+        async function showAllMovies() {
+            const resultsDiv = document.getElementById('searchResults');
+            const moviesListDiv = document.getElementById('moviesList');
+            
+            try {
+                const response = await fetch('/api/movies/list');
+                const data = await response.json();
+                
+                if (data.success && data.data.length > 0) {
+                    moviesListDiv.innerHTML = data.data.map(movie => `
+                        <div style="padding: 10px; border-bottom: 1px solid #e0e0e0; cursor: pointer;" 
+                            onclick="selectMovie('${movie.id}', '${movie.name.replace(/'/g, "\\'")}')">
+                            <strong>${movie.name}</strong>
+                            <span style="color: #666; margin-left: 10px;">${movie.year || '—'}</span>
+                            <span style="color: #ff9800; margin-left: 10px;">⭐ ${movie.rating || '—'}</span>
+                            <span style="color: #4caf50; margin-left: 10px;">📝 ${movie.reviews_count} отзывов</span>
+                        </div>
+                    `).join('');
+                    resultsDiv.style.display = 'block';
+                } else {
+                    moviesListDiv.innerHTML = '<p style="color: #ff9800;">⚠️ Нет фильмов с рецензиями</p>';
+                    resultsDiv.style.display = 'block';
+                }
+            } catch (error) {
+                moviesListDiv.innerHTML = `<p style="color: #f44336;">❌ Ошибка: ${error.message}</p>`;
+                resultsDiv.style.display = 'block';
+            }
+        }
+
+        function selectMovie(movieId, movieName) {
+            selectedMovie = { id: movieId, name: movieName };
+            
+            document.querySelectorAll('#moviesList div').forEach(div => {
+                div.style.background = 'white';
+            });
+            event.target.closest('div').style.background = '#e3f2fd';
+            document.getElementById('analyzeBtn').disabled = false;
+        }
+
+        async function analyzeSelectedMovie() {
+            if (!selectedMovie) {
+                alert('Сначала выберите фильм');
+                return;
+            }
+            
+            const resultDiv = document.getElementById('kinopoiskResult');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            
+            resultDiv.innerHTML = '<div class="loader" style="margin:20px auto;display:block"></div><p style="text-align:center">Анализ отзывов...</p>';
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = '⏳ Анализируем...';
+            
+            try {
+                const response = await fetch('/api/movies/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: selectedMovie.name })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    const s = data.data.stats;
+                    const preview = data.data.reviews_preview;
+                    
+                    resultDiv.innerHTML = `
+                        <div class="file-info" style="margin-top:20px">
+                            <h3>🎬 Результаты: ${data.data.movie_name}</h3>
+                            <div class="stats">
+                                <div class="stat-card"><div class="stat-value">${s.total}</div><div>Всего</div></div>
+                                <div class="stat-card"><div class="stat-value" style="color:#4caf50">${s.positive}</div><div>Положительных (${s.positive_percent}%)</div></div>
+                                <div class="stat-card"><div class="stat-value" style="color:#f44336">${s.negative}</div><div>Отрицательных (${s.negative_percent}%)</div></div>
+                                <div class="stat-card"><div class="stat-value" style="color:#ff9800">${s.neutral}</div><div>Нейтральных (${s.neutral_percent}%)</div></div>
+                            </div>
+                            <button onclick="window.location.href='/api/download/${data.data.csv_filename}'">💾 Скачать CSV</button>
+                            <h3>📝 Примеры отзывов:</h3>
+                            <table class="preview-table">
+                                <thead><tr><th>Отзыв</th><th>Тональность</th><th>Уверенность</th></tr></thead>
+                                <tbody>
+                                    ${preview.slice(0, 10).map(r => `
+                                        <tr><td>${r.text.substring(0, 80)}...</td><td>${r.sentiment_label}</td><td>${(r.confidence*100).toFixed(1)}%</td></tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<div class="result neutral">❌ ${data.error}</div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result neutral">❌ ${error.message}</div>`;
+            } finally {
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = '📊 Анализировать отзывы';
+            }
+        }
+
+        function switchTab(tab) {
+            document.getElementById('textTab').style.display = tab === 'text' ? 'block' : 'none';
+            document.getElementById('csvTab').style.display = tab === 'csv' ? 'block' : 'none';
+            document.getElementById('kinopoiskTab').style.display = tab === 'kinopoisk' ? 'block' : 'none';
+            document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
         }
     </script>
 </body>
