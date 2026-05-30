@@ -1,5 +1,5 @@
 # sentiment_analyzer.py
-# Расширенная версия с поддержкой нескольких моделей
+# Расширенная версия с поддержкой нескольких моделей и анализом частотности слов
 
 import pandas as pd
 import re
@@ -54,6 +54,23 @@ AVAILABLE_MODELS = {
         'language': 'multi',
         'recommended': False
     }
+}
+
+# Русские стоп-слова для частотного анализа
+RUSSIAN_STOPWORDS = {
+    'и', 'в', 'во', 'не', 'что', 'на', 'я', 'с', 'со', 'как', 'а', 'но', 'он', 'она', 'оно',
+    'они', 'его', 'её', 'их', 'у', 'к', 'по', 'от', 'до', 'из', 'за', 'о', 'об', 'при', 'через',
+    'бы', 'да', 'нет', 'так', 'вот', 'же', 'ли', 'ну', 'это', 'быть', 'весь', 'все', 'всё',
+    'вся', 'всех', 'всем', 'всеми', 'этот', 'эта', 'эти', 'этих', 'этим', 'этими', 'тот', 'та',
+    'те', 'тех', 'тем', 'теми', 'свой', 'своя', 'свое', 'свои', 'своего', 'своей', 'своих',
+    'своим', 'своими', 'который', 'которая', 'которое', 'которые', 'которого', 'которой',
+    'которых', 'которым', 'которыми', 'такой', 'такая', 'такое', 'такие', 'такого', 'такой',
+    'таких', 'таким', 'такими', 'очень', 'весьма', 'такой', 'более', 'менее', 'также', 'где',
+    'когда', 'тогда', 'поэтому', 'потому', 'почему', 'зачем', 'откуда', 'куда', 'туда', 'сюда',
+    'тут', 'там', 'здесь', 'теперь', 'уже', 'ещё', 'еще', 'даже', 'будто', 'словно', 'точно',
+    'прямо', 'едва', 'лишь', 'только', 'чуть', 'вдруг', 'сразу', 'опять', 'снова', 'вновь',
+    'потом', 'затем', 'сперва', 'сначала', 'наконец', 'действительно', 'неужели', 'разве',
+    'будто', 'как-то', 'где-то', 'кто-то', 'что-то', 'кое-как', 'кое-где', 'кое-кто', 'кое-что'
 }
 
 class SentimentAnalyzer:
@@ -415,6 +432,129 @@ class SentimentAnalyzer:
             'en': {'positive': 'Positive', 'negative': 'Negative', 'neutral': 'Neutral'}
         }
         return labels.get(lang, labels['ru']).get(sentiment, sentiment)
+    
+    # ============================================
+    # МЕТОДЫ ДЛЯ ЧАСТОТНОГО АНАЛИЗА СЛОВ (ОБЛАКО СЛОВ)
+    # ============================================
+    
+    @staticmethod
+    def extract_word_frequencies(texts: List[str], sentiment_labels: List[str] = None,
+                                  clean_level: str = 'standard', 
+                                  top_n: int = 100,
+                                  min_word_length: int = 3,
+                                  stopwords: set = None) -> Dict[str, List[Dict]]:
+        """
+        Извлекает частотности слов из списка текстов
+        
+        Args:
+            texts: список текстов
+            sentiment_labels: список меток тональности для каждого текста (если None, все тексты считаются общими)
+            clean_level: уровень очистки
+            top_n: количество топ-слов для возврата
+            min_word_length: минимальная длина слова
+            stopwords: набор стоп-слов (если None, используются русские стоп-слова)
+            
+        Returns:
+            словарь с частотами слов для разных тональностей
+        """
+        if stopwords is None:
+            stopwords = RUSSIAN_STOPWORDS
+        
+        # Функция очистки текста для частотного анализа
+        def clean_for_frequencies(text: str) -> List[str]:
+            if not isinstance(text, str):
+                return []
+            
+            text = text.lower()
+            
+            # Удаляем ссылки
+            text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+            
+            # Удаляем пунктуацию и цифры
+            if clean_level == 'aggressive':
+                text = re.sub(r'[^\w\s]', '', text)
+            else:
+                text = re.sub(r'[^\w\sа-яё]', '', text)
+            
+            text = re.sub(r'\d+', '', text)
+            text = re.sub(r'\s+', ' ', text)
+            
+            # Разбиваем на слова
+            words = text.split()
+            
+            # Фильтруем слова
+            filtered_words = []
+            for word in words:
+                if len(word) >= min_word_length and word not in stopwords:
+                    filtered_words.append(word)
+            
+            return filtered_words
+        
+        # Инициализируем счётчики
+        counters = {
+            'all': Counter(),
+            'positive': Counter(),
+            'negative': Counter(),
+            'neutral': Counter()
+        }
+        
+        # Обрабатываем тексты
+        for idx, text in enumerate(texts):
+            words = clean_for_frequencies(text)
+            
+            if not words:
+                continue
+            
+            # Добавляем в общий счётчик
+            counters['all'].update(words)
+            
+            # Добавляем в счётчик по тональности
+            if sentiment_labels and idx < len(sentiment_labels):
+                sentiment = sentiment_labels[idx]
+                if sentiment in counters:
+                    counters[sentiment].update(words)
+        
+        # Формируем результат
+        result = {}
+        for key, counter in counters.items():
+            if counter:
+                top_words = [{'word': word, 'count': count} for word, count in counter.most_common(top_n)]
+                result[key] = top_words
+            else:
+                result[key] = []
+        
+        return result
+    
+    @staticmethod
+    def extract_word_frequencies_from_df(df: pd.DataFrame, text_column: str = 'text',
+                                          sentiment_column: str = 'sentiment',
+                                          clean_level: str = 'standard',
+                                          top_n: int = 100,
+                                          min_word_length: int = 3) -> Dict[str, List[Dict]]:
+        """
+        Извлекает частотности слов из DataFrame с результатами анализа
+        
+        Args:
+            df: DataFrame с колонками text_column и sentiment_column
+            text_column: название колонки с текстом
+            sentiment_column: название колонки с тональностью
+            clean_level: уровень очистки
+            top_n: количество топ-слов для возврата
+            min_word_length: минимальная длина слова
+            
+        Returns:
+            словарь с частотами слов для разных тональностей
+        """
+        texts = df[text_column].tolist()
+        sentiments = df[sentiment_column].tolist() if sentiment_column in df.columns else None
+        
+        return SentimentAnalyzer.extract_word_frequencies(
+            texts=texts,
+            sentiment_labels=sentiments,
+            clean_level=clean_level,
+            top_n=top_n,
+            min_word_length=min_word_length
+        )
 
 
 # ============================================
@@ -448,7 +588,7 @@ if __name__ == "__main__":
             text_column='text',
             output_path=f'sentiment_results_{model_choice}.csv',
             clean=True,
-            clean_level='standard'  # minimal, standard, aggressive
+            clean_level='standard'
         )
         
         # Показываем пример результатов
@@ -456,6 +596,30 @@ if __name__ == "__main__":
         print("📝 ПРИМЕР РЕЗУЛЬТАТОВ:")
         print("="*60)
         print(df[['text', 'sentiment', 'confidence']].head(10).to_string(index=False))
+        
+        # Пример частотного анализа слов для облака слов
+        print("\n" + "="*60)
+        print("☁️ ЧАСТОТНОСТЬ СЛОВ (ОБЛАКО СЛОВ):")
+        print("="*60)
+        
+        word_frequencies = SentimentAnalyzer.extract_word_frequencies_from_df(
+            df=df,
+            text_column='text',
+            sentiment_column='sentiment',
+            top_n=20
+        )
+        
+        print("\n📊 Топ-20 слов во всех отзывах:")
+        for item in word_frequencies.get('all', []):
+            print(f"  {item['word']}: {item['count']}")
+        
+        print("\n😊 Топ-20 слов в положительных отзывах:")
+        for item in word_frequencies.get('positive', [])[:10]:
+            print(f"  {item['word']}: {item['count']}")
+        
+        print("\n😞 Топ-20 слов в отрицательных отзывах:")
+        for item in word_frequencies.get('negative', [])[:10]:
+            print(f"  {item['word']}: {item['count']}")
         
     except FileNotFoundError:
         print(f"\n❌ Файл {csv_file} не найден!")
