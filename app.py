@@ -662,8 +662,7 @@ async def analyze_movie(request: SearchMovieRequest):
         return {"success": False, "error": f"Фильм '{request.query}' не найден"}
     
     # Получаем рецензии
-    # Получаем отзывы (только когда нужно)
-    reviews = get_reviews_by_movie(movie_id)  # ← загружаем ТОЛЬКО для выбранного фильма
+    reviews = get_reviews_by_movie(movie_id)
     
     if not reviews:
         return {"success": False, "error": f"Для фильма '{movie_title}' нет рецензий"}
@@ -671,16 +670,22 @@ async def analyze_movie(request: SearchMovieRequest):
     # Анализируем
     results = []
     sentiment_counts = {'positive': 0, 'negative': 0, 'neutral': 0}
+    sentiment_confidences = {'positive': [], 'negative': [], 'neutral': []}
     
     for review in reviews:
         analysis = analyzer.analyze_single(review, clean=True, clean_level='standard')
+        sentiment = analysis['sentiment']
+        confidence = analysis['confidence']
+        
         results.append({
             'text': review[:200] + "..." if len(review) > 200 else review,
-            'sentiment': analysis['sentiment'],
-            'sentiment_label': analyzer.get_sentiment_label(analysis['sentiment']),
-            'confidence': analysis['confidence']
+            'sentiment': sentiment,
+            'sentiment_label': analyzer.get_sentiment_label(sentiment),
+            'confidence': confidence
         })
-        sentiment_counts[analysis['sentiment']] += 1
+        
+        sentiment_counts[sentiment] += 1
+        sentiment_confidences[sentiment].append(confidence)
     
     # Сохраняем CSV
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -692,6 +697,15 @@ async def analyze_movie(request: SearchMovieRequest):
     uploaded_files[csv_filename] = csv_path
     
     total = len(results)
+    
+    # Вычисляем среднюю уверенность по классам
+    positive_conf = sum(sentiment_confidences['positive']) / len(sentiment_confidences['positive']) if sentiment_confidences['positive'] else 0
+    negative_conf = sum(sentiment_confidences['negative']) / len(sentiment_confidences['negative']) if sentiment_confidences['negative'] else 0
+    neutral_conf = sum(sentiment_confidences['neutral']) / len(sentiment_confidences['neutral']) if sentiment_confidences['neutral'] else 0
+    
+    # Средняя уверенность по всем отзывам
+    avg_confidence = sum(r['confidence'] for r in results) / total if total else 0
+    
     stats = {
         'total': total,
         'positive': sentiment_counts['positive'],
@@ -700,7 +714,10 @@ async def analyze_movie(request: SearchMovieRequest):
         'positive_percent': round(sentiment_counts['positive'] / total * 100, 1) if total else 0,
         'negative_percent': round(sentiment_counts['negative'] / total * 100, 1) if total else 0,
         'neutral_percent': round(sentiment_counts['neutral'] / total * 100, 1) if total else 0,
-        'avg_confidence': round(sum(r['confidence'] for r in results) / total, 3) if total else 0
+        'avg_confidence': round(avg_confidence, 3),
+        'positive_confidence': round(positive_conf, 3),
+        'negative_confidence': round(negative_conf, 3),
+        'neutral_confidence': round(neutral_conf, 3)
     }
     
     return {

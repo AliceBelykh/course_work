@@ -1309,14 +1309,14 @@
                 alert('Сначала выберите фильм');
                 return;
             }
-            
+
             const resultDiv = document.getElementById('kinopoiskResult');
             const analyzeBtn = document.getElementById('analyzeBtn');
-            
+
             resultDiv.innerHTML = '<div class="loader" style="margin:20px auto;display:block"></div><p style="text-align:center">Анализ отзывов...</p>';
             analyzeBtn.disabled = true;
             analyzeBtn.textContent = '⏳ Анализируем...';
-            
+
             try {
                 const response = await fetch('/api/movies/analyze', {
                     method: 'POST',
@@ -1324,32 +1324,98 @@
                     body: JSON.stringify({ query: selectedMovie.name })
                 });
                 const data = await response.json();
-                
+
                 if (data.success) {
                     const s = data.data.stats;
                     const preview = data.data.reviews_preview;
-                    
+                    const csvFilename = data.data.csv_filename;
+
                     resultDiv.innerHTML = `
-                        <div class="file-info" style="margin-top:20px">
-                            <h3>🎬 Результаты: ${data.data.movie_name}</h3>
-                            <div class="stats">
-                                <div class="stat-card"><div class="stat-value">${s.total}</div><div>Всего</div></div>
-                                <div class="stat-card"><div class="stat-value" style="color:#4caf50">${s.positive}</div><div>Положительных (${s.positive_percent}%)</div></div>
-                                <div class="stat-card"><div class="stat-value" style="color:#f44336">${s.negative}</div><div>Отрицательных (${s.negative_percent}%)</div></div>
-                                <div class="stat-card"><div class="stat-value" style="color:#ff9800">${s.neutral}</div><div>Нейтральных (${s.neutral_percent}%)</div></div>
+                <div class="file-info" style="margin-top:20px">
+                    <h3>🎬 Результаты: ${data.data.movie_name}</h3>
+                    <div class="stats">
+                        <div class="stat-card"><div class="stat-value">${s.total}</div><div>Всего</div></div>
+                        <div class="stat-card"><div class="stat-value" style="color:#4caf50">${s.positive}</div><div>Положительных (${s.positive_percent}%)</div></div>
+                        <div class="stat-card"><div class="stat-value" style="color:#f44336">${s.negative}</div><div>Отрицательных (${s.negative_percent}%)</div></div>
+                        <div class="stat-card"><div class="stat-value" style="color:#ff9800">${s.neutral}</div><div>Нейтральных (${s.neutral_percent}%)</div></div>
+                    </div>
+                    
+                    <button onclick="window.location.href='/api/download/${csvFilename}'">💾 Скачать CSV</button>
+                    
+                    <!-- ГРАФИКИ: КРУГОВАЯ И УВЕРЕННОСТЬ -->
+                    <div class="charts-row">
+                        <div class="chart-card">
+                            <h4>📊 Распределение тональностей</h4>
+                            <div class="pie-chart-container">
+                                <canvas id="kinopoiskPieChartCanvas" width="300" height="250" style="max-height: 250px;"></canvas>
                             </div>
-                            <button onclick="window.location.href='/api/download/${data.data.csv_filename}'">💾 Скачать CSV</button>
-                            <h3>📝 Примеры отзывов:</h3>
-                            <table class="preview-table">
-                                <thead><tr><th>Отзыв</th><th>Тональность</th><th>Уверенность</th></tr></thead>
-                                <tbody>
-                                    ${preview.slice(0, 10).map(r => `
-                                        <tr><td>${r.text.substring(0, 80)}...</td><td>${r.sentiment_label}</td><td>${(r.confidence*100).toFixed(1)}%</td></tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
                         </div>
-                    `;
+                        <div class="chart-card">
+                            <h4>📈 Уверенность модели по классам</h4>
+                            <div class="confidence-chart-container">
+                                <canvas id="kinopoiskConfidenceChartCanvas" width="300" height="250" style="max-height: 250px;"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <h3>📝 Примеры отзывов:</h3>
+                    <table class="preview-table">
+                        <thead><tr><th>Отзыв</th><th>Тональность</th><th>Уверенность</th></tr></thead>
+                        <tbody>
+                            ${preview.slice(0, 10).map(r => `
+                                <tr><td>${r.text.substring(0, 80)}...</td><td>${r.sentiment_label}</td><td>${(r.confidence * 100).toFixed(1)}%</td></tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                    
+                    <!-- ОБЛАКО СЛОВ ДЛЯ КИНОПОИСКА -->
+                    <div style="margin-top: 30px; border-top: 2px solid #e0e0e0; padding-top: 20px;">
+                        <h3>☁️ Облако слов из отзывов</h3>
+                        <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                            Часто встречающиеся слова в отзывах на фильм. Чем больше слово, тем чаще оно встречается.
+                        </p>
+                        
+                        <div class="filter-buttons">
+                            <button class="kp-wc-filter-btn active" data-sentiment="all" onclick="filterKinopoiskWordCloud('all')">📊 Все</button>
+                            <button class="kp-wc-filter-btn positive" data-sentiment="positive" onclick="filterKinopoiskWordCloud('positive')">😊 Положительные</button>
+                            <button class="kp-wc-filter-btn negative" data-sentiment="negative" onclick="filterKinopoiskWordCloud('negative')">😞 Отрицательные</button>
+                            <button class="kp-wc-filter-btn neutral" data-sentiment="neutral" onclick="filterKinopoiskWordCloud('neutral')">😐 Нейтральные</button>
+                        </div>
+                        
+                        <div class="settings-row">
+                            <div>
+                                <label>Количество слов:</label>
+                                <select id="kpWcWordCount" onchange="updateKinopoiskWordCloud()">
+                                    <option value="30">30</option>
+                                    <option value="50" selected>50</option>
+                                    <option value="80">80</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div id="kinopoiskWordcloudContainer" class="wordcloud-container">
+                            <div class="loader" style="margin: 20px auto;"></div>
+                            <p>Загрузка облака слов...</p>
+                        </div>
+                        
+                        <div id="kinopoiskTopWords" class="filter-buttons"></div>
+                        
+                        <div class="chart-card" style="margin-top: 20px;">
+                            <h4>📊 Топ-15 самых частотных слов</h4>
+                            <canvas id="kinopoiskBarChartCanvas" width="800" height="350" style="max-height: 350px; width: 100%;"></canvas>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+                    // Рисуем круговую диаграмму
+                    drawKinopoiskPieChart(s.positive, s.negative, s.neutral);
+                    drawKinopoiskConfidenceChart(s.positive_confidence || 0, s.negative_confidence || 0, s.neutral_confidence || 0);
+
+                    // Загружаем облако слов для этого фильма
+                    await loadKinopoiskWordCloud(csvFilename);
+
                 } else {
                     resultDiv.innerHTML = `<div class="result neutral">❌ ${data.error}</div>`;
                 }
@@ -1367,6 +1433,250 @@
             document.getElementById('kinopoiskTab').style.display = tab === 'kinopoisk' ? 'block' : 'none';
             document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
+        }
+        // ============================================
+        // ГРАФИКИ ДЛЯ КИНОПОИСКА
+        // ============================================
+
+        let kinopoiskPieChart = null;
+        let kinopoiskConfidenceChart = null;
+        let kinopoiskBarChart = null;
+        let kinopoiskWordFrequencies = null;
+        let kinopoiskCurrentFilter = 'all';
+
+        function drawKinopoiskPieChart(positive, negative, neutral) {
+            const canvas = document.getElementById('kinopoiskPieChartCanvas');
+            if (!canvas) return;
+            if (kinopoiskPieChart) kinopoiskPieChart.destroy();
+
+            kinopoiskPieChart = new Chart(canvas, {
+                type: 'pie',
+                data: {
+                    labels: ['Положительные', 'Отрицательные', 'Нейтральные'],
+                    datasets: [{
+                        data: [positive, negative, neutral],
+                        backgroundColor: ['#4caf50', '#f44336', '#ff9800'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    const total = positive + negative + neutral;
+                                    const percent = total > 0 ? ((context.raw / total) * 100).toFixed(1) : 0;
+                                    return `${context.label}: ${context.raw} (${percent}%)`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function drawKinopoiskConfidenceChart(positiveConf, negativeConf, neutralConf) {
+            const canvas = document.getElementById('kinopoiskConfidenceChartCanvas');
+            if (!canvas) return;
+            if (kinopoiskConfidenceChart) kinopoiskConfidenceChart.destroy();
+
+            // Округляем значения
+            positiveConf = Number(positiveConf) || 0;
+            negativeConf = Number(negativeConf) || 0;
+            neutralConf = Number(neutralConf) || 0;
+
+            kinopoiskConfidenceChart = new Chart(canvas, {
+                type: 'bar',
+                data: {
+                    labels: ['Положительные', 'Отрицательные', 'Нейтральные'],
+                    datasets: [{
+                        label: 'Средняя уверенность',
+                        data: [positiveConf, negativeConf, neutralConf],
+                        backgroundColor: ['#4caf50', '#f44336', '#ff9800'],
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 1,
+                            title: { display: true, text: 'Уверенность' },
+                            ticks: {
+                                callback: function (value) {
+                                    return (value * 100).toFixed(0) + '%';
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function (context) {
+                                    return `Уверенность: ${(context.raw * 100).toFixed(1)}%`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function drawKinopoiskWordCloud(words) {
+            const container = document.getElementById('kinopoiskWordcloudContainer');
+            if (!container) return;
+
+            if (!words || words.length === 0) {
+                container.innerHTML = '<p style="padding:50px; color:#999;">Нет слов для отображения</p>';
+                return;
+            }
+
+            container.innerHTML = '';
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 800;
+            canvas.height = 400;
+            canvas.style.width = '100%';
+            canvas.style.height = 'auto';
+            canvas.style.maxWidth = '800px';
+            canvas.style.margin = '0 auto';
+            canvas.style.display = 'block';
+            canvas.style.backgroundColor = '#f9f9f9';
+            canvas.style.borderRadius = '8px';
+            container.appendChild(canvas);
+
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            ctx.fillStyle = '#f9f9f9';
+            ctx.fillRect(0, 0, width, height);
+
+            const maxCount = Math.max(...words.map(w => w.count));
+            const minCount = Math.min(...words.map(w => w.count));
+            const colors = ['#667eea', '#764ba2', '#4caf50', '#f44336', '#ff9800', '#2196f3', '#9c27b0', '#00bcd4'];
+
+            words.forEach((w, idx) => {
+                const size = 16 + ((w.count - minCount) / (maxCount - minCount || 1)) * 44;
+                const fontSize = Math.min(size, 50);
+                ctx.font = `${fontSize}px "Segoe UI", Arial, sans-serif`;
+                const x = 20 + Math.random() * (width - ctx.measureText(w.word).width - 40);
+                const y = fontSize + 20 + Math.random() * (height - fontSize - 40);
+                ctx.fillStyle = colors[idx % colors.length];
+                ctx.fillText(w.word, x, y);
+            });
+
+            const tagsDiv = document.createElement('div');
+            tagsDiv.className = 'filter-buttons';
+            tagsDiv.innerHTML = words.slice(0, 20).map(w =>
+                `<span class="word-tag">${w.word}<span class="word-count">${w.count}</span></span>`
+            ).join('');
+            container.appendChild(tagsDiv);
+        }
+
+        function drawKinopoiskBarChart(words) {
+            const canvas = document.getElementById('kinopoiskBarChartCanvas');
+            if (!canvas) return;
+            if (kinopoiskBarChart) kinopoiskBarChart.destroy();
+
+            const topWords = words.slice(0, 15);
+            kinopoiskBarChart = new Chart(canvas, {
+                type: 'bar',
+                data: {
+                    labels: topWords.map(w => w.word),
+                    datasets: [{
+                        label: 'Частота встречаемости',
+                        data: topWords.map(w => w.count),
+                        backgroundColor: 'rgba(102, 126, 234, 0.7)',
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        tooltip: { callbacks: { label: ctx => `Встречается: ${ctx.raw} раз(а)` } }
+                    },
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Количество упоминаний' } },
+                        x: { ticks: { maxRotation: 45, minRotation: 45 } }
+                    }
+                }
+            });
+        }
+
+        async function loadKinopoiskWordCloud(csvFilename) {
+            try {
+                const response = await fetch(`/api/download/${csvFilename}`);
+                const blob = await response.blob();
+                const file = new File([blob], csvFilename, { type: 'text/csv' });
+
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('text_column', 'text');
+                formData.append('clean_level', 'standard');
+
+                const wcResponse = await fetch('/api/wordcloud/frequencies', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const wcData = await wcResponse.json();
+
+                if (wcData.success && wcData.data) {
+                    kinopoiskWordFrequencies = wcData.data;
+                    filterKinopoiskWordCloud('all');
+                } else {
+                    document.getElementById('kinopoiskWordcloudContainer').innerHTML = '<p style="padding:50px; color:#999;">❌ Не удалось загрузить облако слов</p>';
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки облака слов:', error);
+                document.getElementById('kinopoiskWordcloudContainer').innerHTML = '<p style="padding:50px; color:#999;">❌ Ошибка загрузки облака слов</p>';
+            }
+        }
+
+        function filterKinopoiskWordCloud(sentiment) {
+            if (!kinopoiskWordFrequencies) return;
+
+            kinopoiskCurrentFilter = sentiment;
+
+            document.querySelectorAll('.kp-wc-filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.sentiment === sentiment) {
+                    btn.classList.add('active');
+                }
+            });
+
+            let words = [];
+            if (sentiment === 'all') words = kinopoiskWordFrequencies.all || [];
+            else if (sentiment === 'positive') words = kinopoiskWordFrequencies.positive || [];
+            else if (sentiment === 'negative') words = kinopoiskWordFrequencies.negative || [];
+            else if (sentiment === 'neutral') words = kinopoiskWordFrequencies.neutral || [];
+
+            words = words.filter(w => w && w.word && w.word !== 'nan' && w.word !== '');
+
+            const maxWords = parseInt(document.getElementById('kpWcWordCount')?.value || 50);
+            const filteredWords = words.slice(0, maxWords);
+
+            if (filteredWords.length === 0) {
+                document.getElementById('kinopoiskWordcloudContainer').innerHTML = '<p style="padding:50px; color:#999;">😕 Нет слов для отображения</p>';
+                document.getElementById('kinopoiskTopWords').innerHTML = '';
+                return;
+            }
+
+            drawKinopoiskWordCloud(filteredWords);
+            drawKinopoiskBarChart(filteredWords);
+
+            const tagsDiv = document.getElementById('kinopoiskTopWords');
+            tagsDiv.innerHTML = filteredWords.slice(0, 20).map(w =>
+                `<span class="word-tag">${w.word}<span class="word-count">${w.count}</span></span>`
+            ).join('');
+        }
+
+        function updateKinopoiskWordCloud() {
+            filterKinopoiskWordCloud(kinopoiskCurrentFilter);
         }
     </script>
 </body>
